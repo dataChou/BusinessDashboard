@@ -18,52 +18,172 @@ today = datetime(2026, 5, 19)
 all_doctors = list(df_raw['医生'].unique())
 all_services = list(df_raw['服务项目'].unique())
 
-# 从 query_params 中读取筛选值，如果没有则使用全选
-params = st.query_params
-if "doctors" in params:
-    selected_doctors = params["doctors"].split(",")
-else:
-    selected_doctors = all_doctors
-if "services" in params:
-    selected_services = params["services"].split(",")
-else:
-    selected_services = all_services
-
-# 侧边栏筛选器（不使用 key 绑定 session_state）
+# ---------- 侧边栏筛选器 ----------
 st.sidebar.header("🔍 全局筛选")
 
-# 多选组件，值存储在临时变量中
-new_doctors = st.sidebar.multiselect(
+# 重要：使用 default 和 key，不要在外部手动给 st.session_state 赋值
+doctor_filter = st.sidebar.multiselect(
     "选择医生",
     options=all_doctors,
-    default=selected_doctors
+    default=all_doctors,
+    key="doctor_filter"
 )
-new_services = st.sidebar.multiselect(
+
+service_filter = st.sidebar.multiselect(
     "选择服务项目",
     options=all_services,
-    default=selected_services
+    default=all_services,
+    key="service_filter"
 )
 
-# 重置按钮：清空 query_params
-if st.sidebar.button("🔄 重置筛选"):
-    st.query_params.clear()
+# 重置按钮：在回调内部修改 session_state 是允许的
+def reset_filters():
+    st.session_state.doctor_filter = all_doctors
+    st.session_state.service_filter = all_services
+
+if st.sidebar.button("🔄 重置筛选", on_click=reset_filters):
     st.rerun()
 
-# 当筛选器变化时，更新 query_params
-if new_doctors != selected_doctors or new_services != selected_services:
-    st.query_params["doctors"] = ",".join(new_doctors)
-    st.query_params["services"] = ",".join(new_services)
-    st.rerun()
+# 显示当前筛选状态（直接使用组件返回的值，更安全）
+st.sidebar.divider()
+st.sidebar.caption(f"当前筛选：{len(doctor_filter)} 位医生，{len(service_filter)} 类服务")
 
-# 使用最新的筛选值
+# ---------- 数据过滤 ----------
 filtered_df = df_raw[
-    df_raw['医生'].isin(new_doctors) &
-    df_raw['服务项目'].isin(new_services)
+    df_raw['医生'].isin(doctor_filter) &
+    df_raw['服务项目'].isin(service_filter)
 ].copy()
 
 if len(filtered_df) == 0:
-    st.error("❌ 当前筛选条件下无数据")
+    st.error("❌ 当前筛选条件下无数据，请调整筛选条件")
     st.stop()
 
-# 后续代码与之前相同（从客户RFM计算开始）...
-# 为避免重复，下面只写关键部分，实际您可以将之前完整代码复制过来，只需替换数据过滤部分的前置逻辑。
+# ---------- 客户RFM计算 ----------
+last_visit = filtered_df.groupby('宠主ID')['日期'].max().reset_index()
+last_visit['R'] = last_visit['日期'].apply(lambda x: (today - x).days)
+freq = filtered_df.groupby('宠主ID').size().reset_index(name='F')
+amount = filtered_df.groupby('宠主ID')['消费金额'].sum().reset_index(name='M')
+customer_data = last_visit.merge(freq, on='宠主ID').merge(amount, on='宠主ID')
+customer_data = customer_data.merge(filtered_df[['宠主ID', '宠主姓名']].drop_duplicates(), on='宠主ID')
+customer_data['分层'] = customer_data['R'].apply(
+    lambda r: '高价值客户' if r <= 30 else ('活跃客户' if r <= 90 else ('沉睡客户' if r <= 180 else '流失客户'))
+)
+
+# ---------- KPI ----------
+total_customers = customer_data['宠主ID'].nunique()
+total_revenue = filtered_df['消费金额'].sum()
+total_orders = len(filtered_df)
+lost_customers = (customer_data['R'] > 180).sum()
+lost_rate = lost_customers / total_customers if total_customers > 0 else 0
+avg_ticket = total_revenue / total_orders if total_orders > 0 else 0
+
+# ---------- 服务项目分析 ----------
+service_stats = filtered_df.groupby('服务项目').agg(
+    总金额=('消费金额', 'sum'),
+    订单数=('宠主ID', 'count'),
+    客单价=('消费金额', 'mean')
+).round(2).sort_values('总金额', ascending=False)
+if not service_stats.empty:
+    service_stats['金额占比'] = (service_stats['总金额'] / service_stats['总金额'].sum() * 100).round(1)
+
+# ---------- 医生绩效 ----------
+doctor_stats = filtered_df.groupby('医生').agg(
+    接诊量=('宠主ID', 'count'),
+    总业绩=('消费金额', 'sum'),
+    客单价=('消费金额', 'mean')
+).round(2).sort_values('接诊量', ascending=False)
+
+# ---------- 月度趋势 ----------
+filtered_df['月份'] = filtered_df['日期'].dt.to_period('M').astype(str)
+monthly = filtered_df.groupby('月份').agg(
+    营收=('消费金额', 'sum'),
+    订单数=('宠主ID', 'count')
+).reset_index()
+
+# ---------- UI 布局 ----------
+st.title("🐾 宠物医院经营分析看板")
+st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+if len(doctor_filter) < len(all_doctors) or len(service_filter) < len(all_services):
+    st.info(f"📌 当前筛选模式：医生={doctor_filter}, 服务={service_filter}")
+
+col1, col2, col3, col4, col5 = st.columns(5)
+with col1:
+    st.metric("🐕 总客户数", f"{total_customers:,}")
+with col2:
+    st.metric("💰 总营收", f"{total_revenue/10000:.1f}万")
+with col3:
+    st.metric("⚠️ 流失率", f"{lost_rate*100:.1f}%")
+with col4:
+    st.metric("💳 客单价", f"{avg_ticket:.0f}元")
+with col5:
+    st.metric("📋 总订单数", f"{total_orders:,}")
+
+st.divider()
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("📊 客户分层分析")
+    layer_counts = customer_data['分层'].value_counts().reindex(['高价值客户', '活跃客户', '沉睡客户', '流失客户']).fillna(0)
+    fig = px.pie(values=layer_counts.values, names=layer_counts.index, title="客户分层占比",
+                 color_discrete_sequence=['#2ECC71', '#3498DB', '#F39C12', '#E74C3C'])
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+    st.plotly_chart(fig, width='stretch')  # 替换 use_container_width
+
+with col2:
+    st.subheader("🏥 服务项目盈利分析")
+    if not service_stats.empty:
+        fig = px.bar(service_stats, x=service_stats.index, y='总金额', title="各项目营收（元）",
+                     color=service_stats.index,
+                     color_discrete_sequence=['#1ABC9C', '#2ECC71', '#3498DB', '#9B59B6', '#E74C3C'])
+        st.plotly_chart(fig, width='stretch')
+
+st.divider()
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("👨‍⚕️ 医生绩效排名")
+    if not doctor_stats.empty:
+        fig = px.bar(doctor_stats, x=doctor_stats.index, y='接诊量', title="医生接诊量排行",
+                     color=doctor_stats.index, color_discrete_sequence=px.colors.sequential.Blues_r)
+        st.plotly_chart(fig, width='stretch')
+
+with col2:
+    st.subheader("💰 各项目客单价对比")
+    item_price = filtered_df.groupby('服务项目')['消费金额'].mean().round(0).sort_values()
+    if not item_price.empty:
+        fig = px.bar(x=item_price.values, y=item_price.index, orientation='h', title="服务项目客单价（元）",
+                     color=item_price.values, color_continuous_scale='Viridis')
+        st.plotly_chart(fig, width='stretch')
+
+st.divider()
+
+st.subheader(f"⚠️ 流失客户预警（超过6个月未消费）- 共{lost_customers}人")
+lost_list = customer_data[customer_data['R'] > 180].sort_values('R', ascending=False)
+if lost_list.empty:
+    st.info("当前筛选条件下没有流失客户")
+else:
+    lost_display = lost_list[['宠主ID', '宠主姓名', '日期', 'M', 'F', 'R']].head(100)
+    lost_display.columns = ['宠主ID', '宠主姓名', '最近消费日期', '总消费金额', '总消费次数', '未登录天数']
+    st.dataframe(lost_display, width='stretch')
+    if len(lost_list) > 100:
+        st.caption(f"仅显示前100人，共{len(lost_list)}人")
+
+st.divider()
+
+st.subheader("📈 月度营收趋势")
+if not monthly.empty:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=monthly['月份'], y=monthly['营收'],
+                             mode='lines+markers', name='营收',
+                             line=dict(color='#2ECC71', width=3)))
+    fig.add_trace(go.Bar(x=monthly['月份'], y=monthly['订单数'],
+                         name='订单数', yaxis='y2',
+                         marker_color='#3498DB', opacity=0.6))
+    fig.update_layout(
+        title='月度营收与订单数趋势',
+        xaxis_title='月份',
+        yaxis_title='营收（元）',
+        yaxis2=dict(title='订单数', overlaying='y', side='right')
+    )
+    st.plotly_chart(fig, width='stretch')
