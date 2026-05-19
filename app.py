@@ -19,44 +19,64 @@ df_raw = load_data()
 today = datetime(2026, 5, 19)
 
 # ------------------------------
-# 2. 侧边栏筛选器（全局影响）
+# 2. 初始化 session_state 中的筛选器值
+# ------------------------------
+if "doctor_filter" not in st.session_state:
+    st.session_state.doctor_filter = list(df_raw['医生'].unique())
+if "service_filter" not in st.session_state:
+    st.session_state.service_filter = list(df_raw['服务项目'].unique())
+
+# ------------------------------
+# 3. 侧边栏筛选器（绑定 session_state）
 # ------------------------------
 st.sidebar.header("🔍 全局筛选")
+
+def update_doctor_filter():
+    st.session_state.doctor_filter = st.session_state._doctor_filter
+
+def update_service_filter():
+    st.session_state.service_filter = st.session_state._service_filter
+
 selected_doctors = st.sidebar.multiselect(
     "选择医生",
     options=df_raw['医生'].unique(),
-    default=df_raw['医生'].unique(),
-    help="可多选，仅显示所选医生的数据"
+    default=st.session_state.doctor_filter,
+    key="_doctor_filter",
+    on_change=update_doctor_filter
 )
+
 selected_services = st.sidebar.multiselect(
     "选择服务项目",
     options=df_raw['服务项目'].unique(),
-    default=df_raw['服务项目'].unique(),
-    help="可多选，仅显示所选服务项目的数据"
+    default=st.session_state.service_filter,
+    key="_service_filter",
+    on_change=update_service_filter
 )
 
-# 应用筛选
+# 重置按钮
+if st.sidebar.button("🔄 重置筛选"):
+    st.session_state.doctor_filter = list(df_raw['医生'].unique())
+    st.session_state.service_filter = list(df_raw['服务项目'].unique())
+    st.rerun()
+
+# 显示当前筛选状态
+st.sidebar.divider()
+st.sidebar.caption(f"当前筛选：{len(st.session_state.doctor_filter)} 位医生，{len(st.session_state.service_filter)} 类服务")
+
+# ------------------------------
+# 4. 数据过滤（基于 session_state）
+# ------------------------------
 filtered_df = df_raw[
-    df_raw['医生'].isin(selected_doctors) &
-    df_raw['服务项目'].isin(selected_services)
+    df_raw['医生'].isin(st.session_state.doctor_filter) &
+    df_raw['服务项目'].isin(st.session_state.service_filter)
 ].copy()
 
-# 如果筛选后无数据，则显示提示并停止
 if len(filtered_df) == 0:
     st.error("❌ 当前筛选条件下无数据，请调整筛选条件")
     st.stop()
 
-# 在侧边栏显示当前筛选后的基础信息
-st.sidebar.divider()
-st.sidebar.caption(f"当前筛选结果：{len(filtered_df)} 条订单，{filtered_df['宠主ID'].nunique()} 位客户")
-
-# 重置按钮
-if st.sidebar.button("🔄 重置筛选"):
-    st.cache_data.clear()
-    st.rerun()
-
 # ------------------------------
-# 3. 客户指标 & RFM（基于筛选后的数据）
+# 5. 客户指标 & RFM
 # ------------------------------
 last_visit = filtered_df.groupby('宠主ID')['日期'].max().reset_index()
 last_visit['R'] = last_visit['日期'].apply(lambda x: (today - x).days)
@@ -80,7 +100,7 @@ def classify(r):
 customer_data['分层'] = customer_data['R'].apply(classify)
 
 # ------------------------------
-# 4. KPI 指标（基于筛选后的数据）
+# 6. KPI 指标
 # ------------------------------
 total_customers = customer_data['宠主ID'].nunique()
 total_revenue = filtered_df['消费金额'].sum()
@@ -90,7 +110,7 @@ lost_rate = lost_customers / total_customers if total_customers > 0 else 0
 avg_ticket = total_revenue / total_orders if total_orders > 0 else 0
 
 # ------------------------------
-# 5. 服务项目分析（基于筛选后的数据）
+# 7. 服务项目分析
 # ------------------------------
 service_stats = filtered_df.groupby('服务项目').agg(
     总金额=('消费金额', 'sum'),
@@ -102,7 +122,7 @@ if not service_stats.empty:
     service_stats['金额占比'] = (service_stats['总金额'] / service_stats['总金额'].sum() * 100).round(1)
 
 # ------------------------------
-# 6. 医生绩效（基于筛选后的数据）
+# 8. 医生绩效
 # ------------------------------
 doctor_stats = filtered_df.groupby('医生').agg(
     接诊量=('宠主ID', 'count'),
@@ -111,7 +131,7 @@ doctor_stats = filtered_df.groupby('医生').agg(
 ).round(2).sort_values('接诊量', ascending=False)
 
 # ------------------------------
-# 7. 月度趋势（基于筛选后的数据）
+# 9. 月度趋势
 # ------------------------------
 filtered_df['月份'] = filtered_df['日期'].dt.to_period('M').astype(str)
 monthly = filtered_df.groupby('月份').agg(
@@ -120,14 +140,15 @@ monthly = filtered_df.groupby('月份').agg(
 ).reset_index()
 
 # ------------------------------
-# 8. UI 布局
+# 10. UI 布局
 # ------------------------------
 st.title("🐾 宠物医院经营分析看板")
 st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 # 若处于筛选状态，显示提示条
-if len(selected_doctors) < len(df_raw['医生'].unique()) or len(selected_services) < len(df_raw['服务项目'].unique()):
-    st.info(f"📌 当前处于筛选模式：医生={selected_doctors}, 服务={selected_services}")
+if (len(st.session_state.doctor_filter) < len(df_raw['医生'].unique()) or
+    len(st.session_state.service_filter) < len(df_raw['服务项目'].unique())):
+    st.info(f"📌 当前处于筛选模式：医生={st.session_state.doctor_filter}, 服务={st.session_state.service_filter}")
 
 # KPI 卡片
 col1, col2, col3, col4, col5 = st.columns(5)
