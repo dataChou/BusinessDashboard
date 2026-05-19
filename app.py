@@ -15,40 +15,36 @@ def load_data():
 df_raw = load_data()
 today = datetime(2026, 5, 19)
 
-# ------------------------------
-# 初始化 session_state 中的筛选值
-# ------------------------------
-if "doctor_filter" not in st.session_state:
-    st.session_state.doctor_filter = list(df_raw['医生'].unique())
-if "service_filter" not in st.session_state:
-    st.session_state.service_filter = list(df_raw['服务项目'].unique())
+# 预设全选列表（用于重置）
+all_doctors = list(df_raw['医生'].unique())
+all_services = list(df_raw['服务项目'].unique())
 
 # ------------------------------
-# 侧边栏筛选器（直接绑定 session_state）
+# 侧边栏筛选器（直接使用 key 绑定，default 设置初始值）
 # ------------------------------
 st.sidebar.header("🔍 全局筛选")
 
 st.sidebar.multiselect(
     "选择医生",
-    options=df_raw['医生'].unique(),
-    default=st.session_state.doctor_filter,
-    key="doctor_filter"
+    options=all_doctors,
+    default=all_doctors,          # 初始全选
+    key="doctor_filter"           # 自动将选中值存入 st.session_state.doctor_filter
 )
 
 st.sidebar.multiselect(
     "选择服务项目",
-    options=df_raw['服务项目'].unique(),
-    default=st.session_state.service_filter,
+    options=all_services,
+    default=all_services,
     key="service_filter"
 )
 
-# 重置按钮
+# 重置按钮：直接修改 session_state 中的值（Streamlit 允许在回调/按钮中修改）
 if st.sidebar.button("🔄 重置筛选"):
-    st.session_state.doctor_filter = list(df_raw['医生'].unique())
-    st.session_state.service_filter = list(df_raw['服务项目'].unique())
+    st.session_state.doctor_filter = all_doctors
+    st.session_state.service_filter = all_services
     st.rerun()
 
-# 显示当前筛选状态
+# 显示当前筛选状态（从 session_state 中读取）
 st.sidebar.divider()
 st.sidebar.caption(f"当前筛选：{len(st.session_state.doctor_filter)} 位医生，{len(st.session_state.service_filter)} 类服务")
 
@@ -94,7 +90,7 @@ customer_data['分层'] = customer_data['R'].apply(classify)
 total_customers = customer_data['宠主ID'].nunique()
 total_revenue = filtered_df['消费金额'].sum()
 total_orders = len(filtered_df)
-lost_customers = len(customer_data[customer_data['R'] > 180])
+lost_customers = (customer_data['R'] > 180).sum()
 lost_rate = lost_customers / total_customers if total_customers > 0 else 0
 avg_ticket = total_revenue / total_orders if total_orders > 0 else 0
 
@@ -106,7 +102,6 @@ service_stats = filtered_df.groupby('服务项目').agg(
     订单数=('宠主ID', 'count'),
     客单价=('消费金额', 'mean')
 ).round(2).sort_values('总金额', ascending=False)
-
 if not service_stats.empty:
     service_stats['金额占比'] = (service_stats['总金额'] / service_stats['总金额'].sum() * 100).round(1)
 
@@ -134,12 +129,10 @@ monthly = filtered_df.groupby('月份').agg(
 st.title("🐾 宠物医院经营分析看板")
 st.caption(f"数据更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-# 筛选提示
-if (len(st.session_state.doctor_filter) < len(df_raw['医生'].unique()) or
-    len(st.session_state.service_filter) < len(df_raw['服务项目'].unique())):
+if (len(st.session_state.doctor_filter) < len(all_doctors) or
+    len(st.session_state.service_filter) < len(all_services)):
     st.info(f"📌 当前筛选模式：医生={st.session_state.doctor_filter}, 服务={st.session_state.service_filter}")
 
-# KPI 卡片
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     st.metric("🐕 总客户数", f"{total_customers:,}")
@@ -154,7 +147,6 @@ with col5:
 
 st.divider()
 
-# 第一行
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📊 客户分层分析")
@@ -174,7 +166,6 @@ with col2:
 
 st.divider()
 
-# 第二行
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("👨‍⚕️ 医生绩效排名")
@@ -193,7 +184,6 @@ with col2:
 
 st.divider()
 
-# 流失客户
 st.subheader(f"⚠️ 流失客户预警（超过6个月未消费）- 共{lost_customers}人")
 lost_list = customer_data[customer_data['R'] > 180].sort_values('R', ascending=False)
 if lost_list.empty:
@@ -207,7 +197,6 @@ else:
 
 st.divider()
 
-# 月度趋势
 st.subheader("📈 月度营收趋势")
 if not monthly.empty:
     fig = go.Figure()
